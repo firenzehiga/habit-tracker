@@ -150,10 +150,53 @@ func DeleteHabit(c *gin.Context) {
 		return
 	}
 
-	if err := database.DB.Where("id = ? AND user_id = ?", uint(id), userID).Delete(&models.Habit{}).Error; err != nil {
+	// Start transaction
+	tx := database.DB.Begin()
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Verify habit exists and belongs to user
+	var habit models.Habit
+	if err := tx.Where("id = ? AND user_id = ?", uint(id), userID).First(&habit).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":   true,
+			"message": "Habit not found",
+		})
+		return
+	}
+
+	// Delete all habit logs first (foreign key constraint)
+	if err := tx.Where("habit_id = ?", uint(id)).Delete(&models.HabitLog{}).Error; err != nil {
+		tx.Rollback()
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   true,
+			"message": "Failed to delete habit logs",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Delete the habit
+	if err := tx.Where("id = ? AND user_id = ?", uint(id), userID).Delete(&models.Habit{}).Error; err != nil {
+		tx.Rollback()
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   true,
 			"message": "Failed to delete habit",
+			"details": err.Error(),
+		})
+		return
+	}
+
+	// Commit transaction
+	if err := tx.Commit().Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error":   true,
+			"message": "Failed to commit transaction",
+			"details": err.Error(),
 		})
 		return
 	}
